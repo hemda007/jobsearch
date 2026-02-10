@@ -34,7 +34,6 @@ COLUMN_WIDTHS = {
     10: 50,  # J - Contextual intro3
 }
 
-# Color fills for match percentage
 GREEN_FILL = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
 YELLOW_FILL = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
 RED_FILL = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
@@ -50,14 +49,12 @@ def _ensure_tracker_exists(tracker_path: str) -> None:
     ws = wb.active
     ws.title = "Job Tracker"
 
-    # Write headers
     header_font = Font(bold=True)
     for col, header in EXPECTED_HEADERS.items():
         cell = ws.cell(row=1, column=col, value=header)
         cell.font = header_font
         cell.alignment = Alignment(wrap_text=True)
 
-    # Set column widths
     for col, width in COLUMN_WIDTHS.items():
         col_letter = ws.cell(row=1, column=col).column_letter
         ws.column_dimensions[col_letter].width = width
@@ -75,24 +72,11 @@ def _migrate_columns_if_needed(ws) -> bool:
     if header_b and str(header_b).strip().lower() == "jd text":
         return False
 
-    # Check if the current Column B header matches one of the old headers
-    # (i.e., the file has the old format without JD Text column)
-    old_headers_at_b = ["Match %", "match %", "match%"]
-    if header_b and str(header_b).strip().lower() not in [h.lower() for h in old_headers_at_b]:
-        # Column B exists but isn't "Match %" either — might be something custom
-        # Check if it's empty or something unexpected; still insert JD Text
-        pass
-
     print("  Migrating Excel: inserting 'JD Text' column at B and shifting data right...")
-
-    # Insert column at position 2 (shifts everything right)
     ws.insert_cols(2)
-
-    # Set the header for the new column
     ws.cell(row=1, column=2, value="JD Text")
     ws.cell(row=1, column=2).font = Font(bold=True)
     ws.cell(row=1, column=2).alignment = Alignment(wrap_text=True)
-
     return True
 
 
@@ -102,7 +86,6 @@ def _apply_formatting(ws) -> None:
         col_letter = ws.cell(row=1, column=col).column_letter
         ws.column_dimensions[col_letter].width = width
 
-    # Wrap text in all cells
     for row in ws.iter_rows(min_row=1, max_row=ws.max_row, max_col=10):
         for cell in row:
             cell.alignment = Alignment(wrap_text=True, vertical="top")
@@ -111,11 +94,6 @@ def _apply_formatting(ws) -> None:
 def read_unprocessed_rows(tracker_path: str = None) -> list[tuple[int, str, str]]:
     """
     Read the Excel tracker and find rows that need processing.
-
-    A row needs processing when:
-    - Column A (job link) is non-empty
-    - Column B (JD text) is non-empty
-    - Column C (Match %) is empty
 
     Returns list of (row_number, job_link, jd_text) tuples.
     """
@@ -134,7 +112,6 @@ def read_unprocessed_rows(tracker_path: str = None) -> list[tuple[int, str, str]
 
     ws = wb.active
 
-    # Migrate columns if needed
     migrated = _migrate_columns_if_needed(ws)
     if migrated:
         _apply_formatting(ws)
@@ -143,12 +120,11 @@ def read_unprocessed_rows(tracker_path: str = None) -> list[tuple[int, str, str]
         print("  Please paste job description text into the new 'JD Text' column (B).")
 
     unprocessed = []
-    for row in range(2, ws.max_row + 1):  # Skip header row
+    for row in range(2, ws.max_row + 1):
         job_link = ws.cell(row=row, column=1).value
         jd_text = ws.cell(row=row, column=2).value
         match_pct = ws.cell(row=row, column=3).value
 
-        # Row needs processing if link + JD text present but no match %
         if job_link and str(job_link).strip():
             if jd_text and str(jd_text).strip():
                 if not match_pct or not str(match_pct).strip():
@@ -160,71 +136,72 @@ def read_unprocessed_rows(tracker_path: str = None) -> list[tuple[int, str, str]
     return unprocessed
 
 
-def write_results(row_number: int, results: dict, tracker_path: str = None) -> None:
-    """
-    Write processing results to the Excel tracker for a specific row.
+class TrackerWriter:
+    """Context manager that keeps the workbook open for batch writes."""
 
-    Args:
-        row_number: The Excel row number to write to.
-        results: dict with keys:
-            - match_percentage (int)
-            - improvements (str)
-            - referrals (list of 3 dicts with name, title, url)
-            - messages (list of 3 strings)
-        tracker_path: Path to the Excel file.
-    """
-    if tracker_path is None:
-        tracker_path = config.TRACKER_PATH
+    def __init__(self, tracker_path: str = None):
+        self.tracker_path = tracker_path or config.TRACKER_PATH
+        self.wb = None
+        self.ws = None
 
-    try:
-        wb = load_workbook(tracker_path)
-    except PermissionError:
-        raise PermissionError(
-            f"Cannot open {tracker_path} — the file may be open in another application.\n"
-            "Please close it and try again."
-        )
+    def __enter__(self):
+        try:
+            self.wb = load_workbook(self.tracker_path)
+        except PermissionError:
+            raise PermissionError(
+                f"Cannot open {self.tracker_path} — the file may be open in another application.\n"
+                "Please close it and try again."
+            )
+        self.ws = self.wb.active
+        return self
 
-    ws = wb.active
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.wb:
+            self.wb.close()
+        return False
 
-    # Column C: Match %
-    match_pct = results.get("match_percentage", 0)
-    cell_c = ws.cell(row=row_number, column=3, value=f"{match_pct}%")
-    if match_pct >= 70:
-        cell_c.fill = GREEN_FILL
-    elif match_pct >= 50:
-        cell_c.fill = YELLOW_FILL
-    else:
-        cell_c.fill = RED_FILL
+    def write_results(self, row_number: int, results: dict) -> None:
+        """Write processing results to a row and save immediately."""
+        ws = self.ws
 
-    # Column D: 3 areas of improvement
-    improvements = results.get("improvements", [])
-    improvements_text = "\n".join(improvements) if isinstance(improvements, list) else str(improvements)
-    ws.cell(row=row_number, column=4, value=improvements_text)
-
-    # Columns E-J: Referrals and messages
-    referrals = results.get("referrals", [])
-    messages = results.get("messages", [])
-
-    for i in range(3):
-        ref_col = 5 + (i * 2)   # E=5, G=7, I=9
-        msg_col = 6 + (i * 2)   # F=6, H=8, J=10
-
-        if i < len(referrals):
-            ref = referrals[i]
-            ref_text = f"{ref['name']} | {ref['title']}\n{ref['url']}"
-            ws.cell(row=row_number, column=ref_col, value=ref_text)
+        # Column C: Match %
+        match_pct = results.get("match_percentage", 0)
+        cell_c = ws.cell(row=row_number, column=3, value=f"{match_pct}%")
+        if match_pct >= 70:
+            cell_c.fill = GREEN_FILL
+        elif match_pct >= 50:
+            cell_c.fill = YELLOW_FILL
         else:
-            ws.cell(row=row_number, column=ref_col, value="No profile found")
+            cell_c.fill = RED_FILL
 
-        if i < len(messages):
-            ws.cell(row=row_number, column=msg_col, value=messages[i])
-        else:
-            ws.cell(row=row_number, column=msg_col, value="N/A")
+        # Column D: 3 areas of improvement
+        improvements = results.get("improvements", [])
+        improvements_text = "\n".join(improvements) if isinstance(improvements, list) else str(improvements)
+        ws.cell(row=row_number, column=4, value=improvements_text)
 
-    # Apply formatting
-    for col in range(1, 11):
-        ws.cell(row=row_number, column=col).alignment = Alignment(wrap_text=True, vertical="top")
+        # Columns E-J: Referrals and messages
+        referrals = results.get("referrals", [])
+        messages = results.get("messages", [])
 
-    # Save after each row
-    wb.save(tracker_path)
-    wb.close()
+        for i in range(3):
+            ref_col = 5 + (i * 2)   # E=5, G=7, I=9
+            msg_col = 6 + (i * 2)   # F=6, H=8, J=10
+
+            if i < len(referrals):
+                ref = referrals[i]
+                ref_text = f"{ref['name']} | {ref['title']}\n{ref['url']}"
+                ws.cell(row=row_number, column=ref_col, value=ref_text)
+            else:
+                ws.cell(row=row_number, column=ref_col, value="No profile found")
+
+            if i < len(messages):
+                ws.cell(row=row_number, column=msg_col, value=messages[i])
+            else:
+                ws.cell(row=row_number, column=msg_col, value="N/A")
+
+        # Apply formatting to this row
+        for col in range(1, 11):
+            ws.cell(row=row_number, column=col).alignment = Alignment(wrap_text=True, vertical="top")
+
+        # Save after each row so progress isn't lost
+        self.wb.save(self.tracker_path)
