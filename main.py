@@ -30,20 +30,7 @@ def main():
         print("See .env.example for reference.")
         sys.exit(1)
 
-    # --- Step 1: Parse resume ---
-    print("Parsing resume...")
-    try:
-        resume_data = resume_parser.parse_resume()
-        print(f"  Resume loaded: {len(resume_data.get('skills', []))} skills, "
-              f"{resume_data.get('experience_years', 'N/A')} experience")
-    except FileNotFoundError as e:
-        print(f"ERROR: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"ERROR parsing resume: {e}")
-        sys.exit(1)
-
-    # --- Step 2: Read Excel, find unprocessed rows ---
+    # --- Step 1: Ensure tracker Excel exists (so user always has a file to fill in) ---
     print(f"Reading tracker: {config.TRACKER_PATH}")
     try:
         unprocessed = excel_handler.read_unprocessed_rows()
@@ -57,13 +44,26 @@ def main():
     if not unprocessed:
         print("No unprocessed rows found.")
         print("To process jobs:")
-        print("  1. Open the Excel tracker")
+        print(f"  1. Open the Excel tracker at: {config.TRACKER_PATH}")
         print("  2. Paste a job link in Column A")
         print("  3. Paste the job description text in Column B")
         print("  4. Save the file and run this script again")
         sys.exit(0)
 
     print(f"Found {len(unprocessed)} unprocessed job(s)...\n")
+
+    # --- Step 2: Parse resume ---
+    print("Parsing resume...")
+    try:
+        resume_data = resume_parser.parse_resume()
+        print(f"  Resume loaded: {len(resume_data.get('skills', []))} skills, "
+              f"{resume_data.get('experience_years', 'N/A')} experience")
+    except FileNotFoundError as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"ERROR parsing resume: {e}")
+        sys.exit(1)
 
     # --- Step 3: Process each row ---
     succeeded = []
