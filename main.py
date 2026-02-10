@@ -30,7 +30,7 @@ def main():
         print("See .env.example for reference.")
         sys.exit(1)
 
-    # --- Step 1: Ensure tracker Excel exists (so user always has a file to fill in) ---
+    # --- Step 1: Ensure tracker Excel exists ---
     print(f"Reading tracker: {config.TRACKER_PATH}")
     try:
         unprocessed = excel_handler.read_unprocessed_rows()
@@ -69,54 +69,51 @@ def main():
     succeeded = []
     failed = []
 
-    for row_num, job_link, jd_text in unprocessed:
-        print(f"Processing row {row_num}...")
+    with excel_handler.TrackerWriter() as writer:
+        for row_num, job_link, jd_text in unprocessed:
+            print(f"Processing row {row_num}...")
 
-        try:
-            # 3a. Parse JD text
-            jd_data = jd_parser.parse_jd(jd_text)
-            job_title = jd_data.get("job_title", "Unknown")
-            company_name = jd_data.get("company_name", "Unknown")
-            print(f"  Role: {job_title} at {company_name}")
+            try:
+                # Parse JD text
+                jd_data = jd_parser.parse_jd(jd_text)
+                job_title = jd_data.get("job_title", "Unknown")
+                company_name = jd_data.get("company_name", "Unknown")
+                print(f"  Role: {job_title} at {company_name}")
 
-            time.sleep(config.API_CALL_DELAY)
-
-            # 3b. Score match % + get improvements
-            match_result = matcher.match_resume_to_jd(resume_data, jd_data, jd_text)
-            match_pct = match_result.get("match_percentage", 0)
-            improvements = match_result.get("improvements", [])
-            print(f"  Match: {match_pct}%")
-
-            time.sleep(config.API_CALL_DELAY)
-
-            # 3c. Find referral profiles via Google search
-            referrals = referral_finder.find_referrals(company_name, job_title)
-            real_profiles = sum(1 for r in referrals if r["name"] != "Could not find profile")
-            print(f"  Found {real_profiles} referral profile(s)")
-
-            # 3d. Generate contextual messages
-            messages = []
-            for person in referrals:
-                msg = message_generator.generate_message(person, resume_data, jd_data)
-                messages.append(msg)
                 time.sleep(config.API_CALL_DELAY)
-            print(f"  Generated {len(messages)} message(s)")
 
-            # 3e. Write results to Excel
-            results = {
-                "match_percentage": match_pct,
-                "improvements": improvements,
-                "referrals": referrals,
-                "messages": messages,
-            }
-            excel_handler.write_results(row_num, results)
-            print(f"  Saved to Excel\n")
+                # Score match % + get improvements
+                match_result = matcher.match_resume_to_jd(resume_data, jd_data, jd_text)
+                match_pct = match_result.get("match_percentage", 0)
+                improvements = match_result.get("improvements", [])
+                print(f"  Match: {match_pct}%")
 
-            succeeded.append((row_num, job_title, company_name, match_pct))
+                # Find referral profiles (uses Google, not Claude — no API delay needed)
+                referrals = referral_finder.find_referrals(company_name, job_title)
+                real_profiles = sum(1 for r in referrals if r["name"] != "Could not find profile")
+                print(f"  Found {real_profiles} referral profile(s)")
 
-        except Exception as e:
-            print(f"  ERROR processing row {row_num}: {e}\n")
-            failed.append((row_num, str(e)))
+                time.sleep(config.API_CALL_DELAY)
+
+                # Generate all messages in a single API call
+                messages = message_generator.generate_messages(referrals, resume_data, jd_data)
+                print(f"  Generated {len(messages)} message(s)")
+
+                # Write results to Excel (saves after each row)
+                results = {
+                    "match_percentage": match_pct,
+                    "improvements": improvements,
+                    "referrals": referrals,
+                    "messages": messages,
+                }
+                writer.write_results(row_num, results)
+                print(f"  Saved to Excel\n")
+
+                succeeded.append((row_num, job_title, company_name, match_pct))
+
+            except Exception as e:
+                print(f"  ERROR processing row {row_num}: {e}\n")
+                failed.append((row_num, str(e)))
 
     # --- Step 4: Summary ---
     elapsed = time.time() - start_time

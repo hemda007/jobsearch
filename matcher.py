@@ -1,11 +1,6 @@
 """Uses Claude API to score resume-JD match % and find improvement areas."""
 
-import json
-import time
-
-import anthropic
-
-import config
+import claude_client
 
 
 def match_resume_to_jd(resume_data: dict, jd_data: dict, jd_text: str) -> dict:
@@ -14,11 +9,6 @@ def match_resume_to_jd(resume_data: dict, jd_data: dict, jd_text: str) -> dict:
 
     Returns dict with: match_percentage (int), improvements (list of 3 strings).
     """
-    if not config.ANTHROPIC_API_KEY:
-        raise ValueError("ANTHROPIC_API_KEY not set.")
-
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-
     resume_text = resume_data.get("raw_text", "")
 
     prompt = f"""You are a job matching expert. Compare this resume against the job description and provide:
@@ -47,45 +37,16 @@ RESUME:
 JOB DESCRIPTION:
 {jd_text}"""
 
-    try:
-        response = client.messages.create(
-            model=config.MODEL,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        response_text = response.content[0].text.strip()
+    result = claude_client.call_claude_json(prompt)
 
-        # Extract JSON from response
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0].strip()
+    # Validate and normalize
+    if "match_percentage" not in result:
+        result["match_percentage"] = 50
+    if "improvements" not in result or len(result["improvements"]) < 3:
+        result["improvements"] = result.get("improvements", [])
+        while len(result["improvements"]) < 3:
+            result["improvements"].append("Review the full job description for additional requirements")
 
-        result = json.loads(response_text)
+    result["match_percentage"] = max(0, min(100, int(result["match_percentage"])))
 
-        # Validate
-        if "match_percentage" not in result:
-            result["match_percentage"] = 50
-        if "improvements" not in result or len(result["improvements"]) < 3:
-            result["improvements"] = result.get("improvements", [])
-            while len(result["improvements"]) < 3:
-                result["improvements"].append("Review the full job description for additional requirements")
-
-        result["match_percentage"] = max(0, min(100, int(result["match_percentage"])))
-
-        return result
-
-    except anthropic.APIError as e:
-        print(f"  Claude API error, retrying in 5s: {e}")
-        time.sleep(5)
-        response = client.messages.create(
-            model=config.MODEL,
-            max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        response_text = response.content[0].text.strip()
-        if "```json" in response_text:
-            response_text = response_text.split("```json")[1].split("```")[0].strip()
-        elif "```" in response_text:
-            response_text = response_text.split("```")[1].split("```")[0].strip()
-        return json.loads(response_text)
+    return result
