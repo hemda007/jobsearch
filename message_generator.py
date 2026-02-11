@@ -27,7 +27,7 @@ def generate_messages(
 
     for i, person in enumerate(referrals):
         if person.get("name") == "Could not find profile":
-            messages.append("N/A — no profile found for this slot.")
+            messages.append("N/A - no profile found for this slot.")
         else:
             index_map[len(real_profiles)] = i
             real_profiles.append(person)
@@ -53,31 +53,49 @@ def generate_messages(
             f"- Connection type: {person['connection_type']}"
         )
 
-    prompt = f"""Write {len(real_profiles)} LinkedIn connection request message(s) (max 280 characters EACH) from a job seeker to potential referral contacts.
+    prompt = f"""You are ghostwriting LinkedIn connection requests for a real person. These must read like a human typed them on their phone. Zero AI smell.
 
-RULES:
-- Be specific and contextual — reference something concrete from the candidate's background that connects to the person's role/company
-- Do NOT be generic ("I'd love to connect" or "I'm reaching out because...")
-- Do NOT be needy or desperate
-- Be concise — this is a connection request, not a cover letter
-- Sound human, warm, and specific
-- End with a soft ask (learn about their experience, not "please refer me")
+Write {len(real_profiles)} connection request message(s). Max 280 characters EACH.
 
-CANDIDATE PROFILE:
+ABSOLUTE RULES:
+- Sound like a real human, not a bot. Think "quick message at a coffee shop" energy.
+- NEVER use em dashes. Use periods, commas, or just start a new thought.
+- NEVER use semicolons.
+- NEVER say: "leverage", "synergy", "passionate", "keen", "eager", "excited", "thrilled", "delighted", "invaluable", "insightful"
+- NEVER start with: "Hi [Name]", "Hey!", "I came across", "I noticed", "I'd love to connect", "I'm reaching out", "Hope this finds you"
+- NEVER ask for a job or referral. Ever.
+- Use lowercase naturally. Don't overcapitalize.
+- Use contractions (i'm, you're, what's)
+- One or two sentences max. Short. Punchy.
+- Lead with a specific shared interest (a tool, a tech, a problem you both deal with)
+- End with a low-pressure question
+
+TONE BY WHO THEY ARE:
+- same_role: talk shop, mention a specific tool you both use. "been working with [X] on a pipeline project. saw you're doing similar stuff at {company_name}, curious how [Y] is working out for you?"
+- hiring_manager: show you get what their team does. don't ask for anything. "your data team's growth at {company_name} caught my eye. i built something similar with [tech]. would be cool to hear how you all approach [problem]"
+- peer: keep it super casual. "fellow data person here. been deep in [tech] lately, curious what the stack looks like at {company_name}"
+
+GOOD (copy this energy):
+- "been building spark pipelines on AWS lately. saw your team at {company_name} uses kafka too. curious how you handle schema changes at that scale?"
+- "just finished migrating a warehouse to snowflake. {company_name}'s data team seems to be growing fast. what does the tooling look like on the inside?"
+- "fellow data engineer here, been working with airflow and dbt. curious what orchestration looks like at {company_name}?"
+
+BAD (never do this):
+- "Hi Rahul, I'm a data engineer passionate about building scalable pipelines. I'd love to connect and learn about your experience at IBM."
+- "Hello! I noticed your impressive profile. I'm eager to explore opportunities and would appreciate any insights you might share."
+- "I'm reaching out because I'm very interested in the Data Engineer role at your esteemed company. I believe my skills in Python and SQL make me a strong candidate."
+
+ABOUT THE SENDER:
 - Name: Peter Pandey
-- Target role: {job_title} at {company_name}
-- Key skills: {top_skills}
-- Relevant project: {most_relevant_project}
-
-COMPANY & ROLE:
-- Company: {company_name}
-- Role: {job_title}
-- Key requirements: {top_requirements}
+- Skills: {top_skills}
+- Recent project: {most_relevant_project}
+- Looking at: {job_title} at {company_name}
+- Role needs: {top_requirements}
 
 {chr(10).join(people_blocks)}
 
-Return ONLY valid JSON — an array of {len(real_profiles)} message string(s), in order:
-["message for person 1", "message for person 2", ...]"""
+Return ONLY a JSON array of {len(real_profiles)} message string(s):
+["msg1", "msg2", ...]"""
 
     try:
         raw = claude_client.call_claude(prompt, max_tokens=512)
