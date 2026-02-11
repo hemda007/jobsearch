@@ -1,80 +1,125 @@
-"""Finds real LinkedIn profiles via Google search."""
+"""Finds real LinkedIn profiles via SerpAPI (preferred) or Google search fallback."""
 
+import json
 import re
 import time
 import urllib.parse
-
-from googlesearch import search
+import urllib.request
 
 import config
 
 
-def _search_linkedin(query: str, num_results: int = 5) -> list[dict]:
-    """
-    Search Google for LinkedIn profiles matching the query.
-    Returns list of dicts with url, name, title extracted from results.
-    """
+def _parse_linkedin_title(title: str, description: str = "") -> tuple[str, str]:
+    """Extract name and title from a LinkedIn search result."""
+    name = ""
+    person_title = ""
+
+    if title:
+        title_clean = title.replace(" | LinkedIn", "").replace(" - LinkedIn", "")
+        parts = title_clean.split(" - ", 1)
+        if len(parts) >= 2:
+            name = parts[0].strip()
+            person_title = parts[1].strip()
+        elif len(parts) == 1:
+            name = parts[0].strip()
+
+    if not name and description:
+        name_match = re.match(r"^([A-Z][a-z]+ [A-Z][a-z]+)", description)
+        if name_match:
+            name = name_match.group(1)
+
+    if not person_title and description:
+        person_title = description[:100]
+
+    return name or "Unknown", person_title or "Professional"
+
+
+def _search_serpapi(query: str, num_results: int = 5) -> list[dict]:
+    """Search using SerpAPI (reliable, free tier: 100 searches/month)."""
+    profiles = []
+    params = urllib.parse.urlencode({
+        "q": query,
+        "api_key": config.SERPAPI_API_KEY,
+        "engine": "google",
+        "num": num_results,
+    })
+    url = f"https://serpapi.com/search.json?{params}"
+
+    try:
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode())
+
+        for result in data.get("organic_results", []):
+            link = result.get("link", "")
+            if "linkedin.com/in/" not in link:
+                continue
+
+            link = link.split("?")[0]
+            title = result.get("title", "")
+            snippet = result.get("snippet", "")
+            name, person_title = _parse_linkedin_title(title, snippet)
+
+            profiles.append({
+                "name": name,
+                "title": person_title,
+                "url": link,
+            })
+    except Exception as e:
+        print(f"  SerpAPI error: {e}")
+
+    return profiles
+
+
+def _search_google_fallback(query: str, num_results: int = 5) -> list[dict]:
+    """Fallback: use googlesearch-python package."""
     profiles = []
     try:
+        from googlesearch import search
         results = search(query, num_results=num_results, advanced=True)
         for result in results:
             url = result.url if hasattr(result, "url") else str(result)
             title = result.title if hasattr(result, "title") else ""
             description = result.description if hasattr(result, "description") else ""
 
-            # Only keep linkedin.com/in/ profile URLs
             if "linkedin.com/in/" not in url:
                 continue
 
-            # Clean URL
-            url = url.split("?")[0]  # Remove query params
-
-            # Extract name from title (LinkedIn titles are usually "Name - Title | LinkedIn")
-            name = ""
-            person_title = ""
-            if title:
-                # Common LinkedIn title format: "First Last - Title | LinkedIn"
-                title_clean = title.replace(" | LinkedIn", "").replace(" - LinkedIn", "")
-                parts = title_clean.split(" - ", 1)
-                if len(parts) >= 2:
-                    name = parts[0].strip()
-                    person_title = parts[1].strip()
-                elif len(parts) == 1:
-                    name = parts[0].strip()
-
-            # Fallback: try to extract from description
-            if not name and description:
-                # Description often starts with the person's headline
-                name_match = re.match(r"^([A-Z][a-z]+ [A-Z][a-z]+)", description)
-                if name_match:
-                    name = name_match.group(1)
-
-            if not person_title and description:
-                person_title = description[:100]  # Use first 100 chars of description
+            url = url.split("?")[0]
+            name, person_title = _parse_linkedin_title(title, description)
 
             profiles.append({
-                "name": name or "Unknown",
-                "title": person_title or "Professional",
+                "name": name,
+                "title": person_title,
                 "url": url,
             })
-
     except Exception as e:
         print(f"  Google search error for '{query[:50]}...': {e}")
 
     return profiles
 
 
+def _search(query: str, num_results: int = 5) -> list[dict]:
+    """Search using best available method."""
+    if config.SERPAPI_API_KEY:
+        return _search_serpapi(query, num_results)
+    return _search_google_fallback(query, num_results)
+
+
 def find_referrals(company_name: str, job_title: str) -> list[dict]:
     """
     Find 3 real LinkedIn profiles at the target company.
 
-    Runs 3 searches:
-    1. People in the same role
-    2. Potential hiring managers
-    3. Peer-level engineers
+    Uses SerpAPI if SERPAPI_API_KEY is set (reliable), otherwise falls back
+    to googlesearch-python (can get blocked by Google).
 
     Returns list of up to 3 dicts with: name, title, url, connection_type.
     """
+    if config.SERPAPI_API_KEY:
+        print("  Using SerpAPI for profile search")
+    else:
+        print("  Using Google search (tip: add SERPAPI_API_KEY to .env for better results)")
+
     referrals = []
     seen_urls = set()
 
@@ -82,17 +127,14 @@ def find_referrals(company_name: str, job_title: str) -> list[dict]:
         {
             "query": f'site:linkedin.com/in "{company_name}" "{job_title}"',
             "connection_type": "same_role",
-            "label": "same role",
         },
         {
             "query": f'site:linkedin.com/in "{company_name}" "Engineering Manager" OR "Data Lead" OR "Head of Data"',
             "connection_type": "hiring_manager",
-            "label": "hiring manager",
         },
         {
             "query": f'site:linkedin.com/in "{company_name}" "Data Engineer" OR "Analytics Engineer" OR "Software Engineer"',
             "connection_type": "peer",
-            "label": "peer",
         },
     ]
 
@@ -104,13 +146,12 @@ def find_referrals(company_name: str, job_title: str) -> list[dict]:
             time.sleep(config.GOOGLE_SEARCH_PAUSE)
 
         try:
-            profiles = _search_linkedin(search_config["query"])
+            profiles = _search(search_config["query"])
         except Exception:
-            # Rate limited — wait and retry once
             print(f"  Rate limited on search {i + 1}, waiting {config.GOOGLE_RATE_LIMIT_WAIT}s...")
             time.sleep(config.GOOGLE_RATE_LIMIT_WAIT)
             try:
-                profiles = _search_linkedin(search_config["query"])
+                profiles = _search(search_config["query"])
             except Exception as e:
                 print(f"  Search still failing: {e}")
                 profiles = []
@@ -120,14 +161,13 @@ def find_referrals(company_name: str, job_title: str) -> list[dict]:
                 profile["connection_type"] = search_config["connection_type"]
                 referrals.append(profile)
                 seen_urls.add(profile["url"])
-                break  # Take only the first valid profile from each search
+                break
 
-    # If we didn't get 3, try a broader fallback search
+    # Broader fallback if we don't have 3
     if len(referrals) < 3:
         time.sleep(config.GOOGLE_SEARCH_PAUSE)
         try:
-            fallback_query = f'site:linkedin.com/in "{company_name}" engineer'
-            profiles = _search_linkedin(fallback_query, num_results=10)
+            profiles = _search(f'site:linkedin.com/in "{company_name}" engineer', num_results=10)
             for profile in profiles:
                 if len(referrals) >= 3:
                     break
@@ -138,14 +178,14 @@ def find_referrals(company_name: str, job_title: str) -> list[dict]:
         except Exception as e:
             print(f"  Fallback search failed: {e}")
 
-    # If we still have fewer than 3, fill with manual search suggestion
+    # Fill remaining slots with manual search links
     while len(referrals) < 3:
         search_url = "https://www.google.com/search?" + urllib.parse.urlencode({
             "q": f'site:linkedin.com/in "{company_name}" "{job_title}"'
         })
         referrals.append({
             "name": "Could not find profile",
-            "title": f"Try searching manually",
+            "title": "Try searching manually",
             "url": search_url,
             "connection_type": "unknown",
         })

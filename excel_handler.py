@@ -102,6 +102,16 @@ def read_unprocessed_rows(tracker_path: str = None) -> list[tuple[int, str, str]
 
     _ensure_tracker_exists(tracker_path)
 
+    # Early write-permission check — fail fast before expensive API calls
+    try:
+        with open(tracker_path, "a"):
+            pass
+    except PermissionError:
+        raise PermissionError(
+            f"Cannot write to {tracker_path} — the file is open in Excel or another application.\n"
+            "Please close it and try again."
+        )
+
     try:
         wb = load_workbook(tracker_path)
     except PermissionError:
